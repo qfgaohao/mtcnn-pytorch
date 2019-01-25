@@ -4,7 +4,7 @@ from torch.autograd import Variable
 from .get_nets import PNet, RNet, ONet
 from .box_utils import nms, calibrate_box, get_image_boxes, convert_to_square
 from .first_stage import run_first_stage
-
+from PIL import Image
 
 def detect_faces(image, min_face_size=20.0,
                  thresholds=[0.6, 0.7, 0.8],
@@ -20,6 +20,11 @@ def detect_faces(image, min_face_size=20.0,
         two float numpy arrays of shapes [n_boxes, 4] and [n_boxes, 10],
         bounding boxes and facial landmarks.
     """
+    # convert 1 channel image grayscale image to 3 channels.
+    if image.mode == 'L':
+        img = Image.new("RGB", image.size)
+        img.paste(image)
+        image = img
 
     # LOAD MODELS
     pnet = PNet()
@@ -61,8 +66,9 @@ def detect_faces(image, min_face_size=20.0,
 
     # collect boxes (and offsets, and scores) from different scales
     bounding_boxes = [i for i in bounding_boxes if i is not None]
+    if not bounding_boxes:
+        return np.empty([0, 5]), np.empty([0, 10])
     bounding_boxes = np.vstack(bounding_boxes)
-
     keep = nms(bounding_boxes[:, 0:5], nms_thresholds[0])
     bounding_boxes = bounding_boxes[keep]
 
@@ -76,11 +82,11 @@ def detect_faces(image, min_face_size=20.0,
     # STAGE 2
 
     img_boxes = get_image_boxes(bounding_boxes, image, size=24)
-    img_boxes = Variable(torch.FloatTensor(img_boxes), volatile=True)
-    output = rnet(img_boxes)
+    with torch.no_grad():
+        img_boxes = torch.FloatTensor(img_boxes)
+        output = rnet(img_boxes)
     offsets = output[0].data.numpy()  # shape [n_boxes, 4]
     probs = output[1].data.numpy()  # shape [n_boxes, 2]
-
     keep = np.where(probs[:, 1] > thresholds[1])[0]
     bounding_boxes = bounding_boxes[keep]
     bounding_boxes[:, 4] = probs[keep, 1].reshape((-1,))
@@ -96,9 +102,10 @@ def detect_faces(image, min_face_size=20.0,
 
     img_boxes = get_image_boxes(bounding_boxes, image, size=48)
     if len(img_boxes) == 0: 
-        return [], []
-    img_boxes = Variable(torch.FloatTensor(img_boxes), volatile=True)
-    output = onet(img_boxes)
+        return np.empty([0, 5]), np.empty([0, 10])
+    with torch.no_grad():
+        img_boxes = torch.FloatTensor(img_boxes)
+        output = onet(img_boxes)
     landmarks = output[0].data.numpy()  # shape [n_boxes, 10]
     offsets = output[1].data.numpy()  # shape [n_boxes, 4]
     probs = output[2].data.numpy()  # shape [n_boxes, 2]
@@ -115,7 +122,6 @@ def detect_faces(image, min_face_size=20.0,
     xmin, ymin = bounding_boxes[:, 0], bounding_boxes[:, 1]
     landmarks[:, 0:5] = np.expand_dims(xmin, 1) + np.expand_dims(width, 1)*landmarks[:, 0:5]
     landmarks[:, 5:10] = np.expand_dims(ymin, 1) + np.expand_dims(height, 1)*landmarks[:, 5:10]
-
     bounding_boxes = calibrate_box(bounding_boxes, offsets)
     keep = nms(bounding_boxes, nms_thresholds[2], mode='min')
     bounding_boxes = bounding_boxes[keep]
